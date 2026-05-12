@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>PUBG FRONT - Battle Royale Shooter</title>
+    <style>
+        * {
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: radial-gradient(circle at 20% 30%, #0a1f1e, #030c0b);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Courier New', 'VT323', monospace;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Main Game Container */
+        .game-container {
+            background: #000000aa;
+            border-radius: 32px;
+            padding: 12px;
+            box-shadow: 0 20px 35px rgba(0,0,0,0.5), inset 0 1px 2px rgba(255,255,255,0.1);
+            backdrop-filter: blur(2px);
+        }
+
+        canvas {
+            display: block;
+            margin: 0 auto;
+            border-radius: 20px;
+            cursor: crosshair;
+            box-shadow: 0 0 0 3px #ffd966, 0 0 0 7px #b87c2e;
+            transition: all 0.1s ease;
+        }
+
+        /* HUD Panel */
+        .hud {
+            margin-top: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #0a0f0ee6;
+            padding: 8px 20px;
+            border-radius: 60px;
+            backdrop-filter: blur(4px);
+            border: 1px solid #ffcd7e;
+            color: #f5eace;
+            text-shadow: 2px 2px 0 #7a2e00;
+            font-weight: bold;
+        }
+
+        .stats {
+            display: flex;
+            gap: 32px;
+            font-size: 1.5rem;
+            letter-spacing: 2px;
+        }
+
+        .stats span {
+            background: #2c1e12;
+            padding: 4px 16px;
+            border-radius: 32px;
+            display: inline-block;
+            box-shadow: inset 0 1px 3px #00000055, 0 2px 3px #ffdfa0;
+        }
+
+        .restart-btn {
+            background: #e25822;
+            border: none;
+            font-family: monospace;
+            font-weight: bold;
+            font-size: 1.2rem;
+            padding: 6px 18px;
+            border-radius: 40px;
+            color: white;
+            cursor: pointer;
+            transition: 0.1s linear;
+            box-shadow: 0 3px 0 #6a2c00;
+        }
+
+        .restart-btn:active {
+            transform: translateY(2px);
+            box-shadow: 0 1px 0 #6a2c00;
+        }
+
+        .controls-tip {
+            font-size: 0.8rem;
+            background: #1e2a24aa;
+            margin-top: 12px;
+            padding: 6px 18px;
+            border-radius: 24px;
+            text-align: center;
+            color: #fad980;
+        }
+
+        @media (max-width: 860px) {
+            .stats span { font-size: 1rem; padding: 2px 12px; }
+            .hud { padding: 5px 16px; }
+            .stats { gap: 16px; }
+        }
+    </style>
+</head>
+<body>
+<div>
+    <div class="game-container">
+        <canvas id="gameCanvas" width="1000" height="600"></canvas>
+        <div class="hud">
+            <div class="stats">
+                <span>🔫 KILLS: <span id="killCount">0</span></span>
+                <span>❤️ HP: <span id="healthVal">100</span></span>
+                <span>🎯 SCORE: <span id="scoreVal">0</span></span>
+            </div>
+            <button class="restart-btn" id="resetGameBtn">⚡ RESTART ⚡</button>
+        </div>
+        <div class="controls-tip">
+            🖱️ MOUSE = AIM + SHOOT (left click) &nbsp;&nbsp;|&nbsp;&nbsp; 🎯 HEADSHOT = +50 BONUS &nbsp;&nbsp;|&nbsp;&nbsp; 🧟 ENEMIES GET CLOSER!
+        </div>
+    </div>
+</div>
+
+<script>
+    (function(){
+        // ---------- CANVAS ----------
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // ---------- GAME DIMENSIONS ----------
+        let width = 1000;
+        let height = 600;
+        canvas.width = width;
+        canvas.height = height;
+
+        // ---------- PLAYER ----------
+        let player = {
+            x: width/2,
+            y: height - 70,
+            radius: 22,
+            health: 100,
+            maxHealth: 100,
+            invincibleFrames: 0,        // i-frames after hit
+        };
+
+        // ---------- GAME STATE ----------
+        let kills = 0;
+        let score = 0;
+        let gameOver = false;
+        let frame = 0;
+        let enemies = [];
+        let bullets = [];
+        let muzzleFlash = 0;
+
+        // ---------- ENEMY CONFIG ----------
+        const ENEMY_BASE_SPEED = 0.95;
+        const ENEMY_RADIUS = 22;   // (enemy size)
+        let enemySpawnCounter = 0;
+        let enemySpawnDelay = 38;    // frames between spawns (gets harder)
+
+        // ---------- BULLET CONFIG ----------
+        let bulletSpeed = 12;
+        let bulletRadius = 5;
+        let fireCooldown = 0;
+        const FIRE_DELAY_MAX = 10;   // semi-auto cooldown (fast, but not full auto insanity)
+
+        // ---------- HELPER: RESET GAME ----------
+        function resetGame() {
+            gameOver = false;
+            kills = 0;
+            score = 0;
+            player.health = player.maxHealth;
+            player.invincibleFrames = 0;
+            player.x = width/2;
+            player.y = height - 70;
+            enemies = [];
+            bullets = [];
+            frame = 0;
+            enemySpawnCounter = 0;
+            fireCooldown = 0;
+            muzzleFlash = 0;
+            // reset spawn difficulty
+            enemySpawnDelay = 38;
+            updateUI();
+        }
+
+        // UI updates
+        function updateUI() {
+            document.getElementById('killCount').innerText = kills;
+            document.getElementById('healthVal').innerText = Math.max(0, player.health);
+            document.getElementById('scoreVal').innerText = score;
+        }
+
+        // spawn an enemy (with variation in size, color direction)
+        function spawnEnemy() {
+            // Determine spawn side: left, right, top (but not inside player)
+            let side = Math.floor(Math.random() * 3); // 0:left, 1:right, 2:top
+            let x, y;
+            const padding = 40;
+            if (side === 0) { // left edge
+                x = -ENEMY_RADIUS + padding;
+                y = Math.random() * (height - 150) + 60;
+            } else if (side === 1) { // right edge
+                x = width + ENEMY_RADIUS - padding;
+                y = Math.random() * (height - 150) + 60;
+            } else { // top edge
+                x = Math.random() * (width - 100) + 50;
+                y = -ENEMY_RADIUS + 20;
+            }
+            // clamp x & y inside reasonable bounds for spawn (avoid instant stuck)
+            x = Math.min(Math.max(x, -ENEMY_RADIUS), width + ENEMY_RADIUS);
+            y = Math.min(Math.max(y, -ENEMY_RADIUS), height + ENEMY_RADIUS);
+            
+            // dynamic enemy type: different colors & HP variants (standard & heavy)
+            const typeRoll = Math.random();
+            let hp = 1;
+            let color = "#dc4c2c";
+            let sizeMod = 1.0;
+            let points = 10;
+            if (typeRoll < 0.2) { // Heavy Grunt
+                hp = 3;
+                color = "#b8451a";
+                sizeMod = 1.2;
+                points = 25;
+            } else if (typeRoll < 0.35) { // Fast Scout (slight speed buff)
+                hp = 1;
+                color = "#e9a23b";
+                sizeMod = 0.9;
+                points = 10;
+            } else {
+                hp = 1;
+                color = "#d93f21";
+                points = 10;
+            }
+            
+            enemies.push({
+                x: x, y: y, radius: ENEMY_RADIUS * sizeMod,
+                hp: hp,
+                maxHp: hp,
+                color: color,
+                points: points,
+                speed: ENEMY_BASE_SPEED + (typeRoll < 0.35 ? 0.65 : 0.0), // fast enemies
+                type: typeRoll
+            });
+        }
+
+        // Update enemies (move toward player, collision with player, death by bullet)
+        function updateEnemies() {
+            for (let i = 0; i < enemies.length; i++) {
+                const e = enemies[i];
+                // direction vector to player
+                let dx = player.x - e.x;
+                let dy = player.y - e.y;
+                let dist = Math.hypot(dx, dy);
+                if (dist > 0.01) {
+                    let move = e.speed;
+                    e.x += (dx / dist) * move;
+                    e.y += (dy / dist) * move;
+                }
+                
+                // boundary limitations (optional: let them go slightly outside, but not vanish)
+                e.x = Math.min(Math.max(e.x, -e.radius-10), width + e.radius+10);
+                e.y = Math.min(Math.max(e.y, -e.radius-10), height + e.radius+10);
+                
+                // collision with player (damage)
+                if (!gameOver) {
+                    let playerDist = Math.hypot(player.x - e.x, player.y - e.y);
+                    let collisionDist = player.radius + e.radius;
+                    if (playerDist < collisionDist && player.invincibleFrames <= 0) {
+                        // damage based on enemy type
+                        let dmg = (e.hp >= 3) ? 18 : 12;
+                        player.health = Math.max(0, player.health - dmg);
+                        player.invincibleFrames = 18;  // invincibility frames
+                        updateUI();
+                        if (player.health <= 0) {
+                            gameOver = true;
+                        }
+                        // knockback enemy slightly
+                        let angle = Math.atan2(e.y - player.y, e.x - player.x);
+                        e.x += Math.cos(angle) * 25;
+                        e.y += Math.sin(angle) * 25;
+                    }
+                }
+            }
+            
+            // remove dead enemies (hp <= 0)
+            for (let i = enemies.length-1; i >= 0; i--) {
+                if (enemies[i].hp <= 0) {
+                    // add score and kills
+                    const e = enemies[i];
+                    kills++;
+                    score += e.points;
+                    updateUI();
+                    enemies.splice(i,1);
+                }
+            }
+        }
+
+        // Spawn enemies dynamically
+        function handleSpawning() {
+            if (gameOver) return;
+            // dynamic difficulty: more enemies as kills increase
+            let dynamicDelay = Math.max(18, 38 - Math.floor(kills / 12));
+            if (frame % dynamicDelay === 0 && enemies.length < 18) {
+                spawnEnemy();
+                // sometimes double spawn!
+                if (kills > 12 && Math.random() < 0.3 && enemies.length < 22) {
+                    spawnEnemy();
+                }
+            }
+        }
+
+        // Shoot bullet from player to mouse coordinates
+        let mouseX = player.x, mouseY = player.y; // default
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            let canvasX = (e.clientX - rect.left) * scaleX;
+            let canvasY = (e.clientY - rect.top) * scaleY;
+            canvasX = Math.min(Math.max(canvasX, 0), width);
+            canvasY = Math.min(Math.max(canvasY, 0), height);
+            mouseX = canvasX;
+            mouseY = canvasY;
+        });
+
+        function shootFromPlayer() {
+            if (gameOver) return;
+            // direction towards mouse
+            let dx = mouseX - player.x;
+            let dy = mouseY - player.y;
+            let length = Math.hypot(dx, dy);
+            if (length < 0.001) return;
+            let normX = dx / length;
+            let normY = dy / length;
+            bullets.push({
+                x: player.x + normX * (player.radius+4),
+                y: player.y + normY * (player.radius+4),
+                vx: normX * bulletSpeed,
+                vy: normY * bulletSpeed,
+                radius: 6,
+                life: true
+            });
+            muzzleFlash = 4;   // visual effect
+        }
+
+        // Update bullets, collision with enemies (with headshot logic)
+        function updateBullets() {
+            for (let i=0; i<bullets.length; i++) {
+                const b = bullets[i];
+                b.x += b.vx;
+                b.y += b.vy;
+                // boundary remove
+                if (b.x < -50 || b.x > width+50 || b.y < -50 || b.y > height+50) {
+                    bullets.splice(i,1);
+                    i--;
+                    continue;
+                }
+                let hitIndex = -1;
+                let headshotFlag = false;
+                for (let j=0; j<enemies.length; j++) {
+                    const e = enemies[j];
+                    const distToEnemy = Math.hypot(b.x - e.x, b.y - e.y);
+                    if (distToEnemy < e.radius + b.radius) {
+                        // HEADSHOT ZONE: upper 40% of enemy radius (top part)
+                        const hitAngle = Math.atan2(b.y - e.y, b.x - e.x);
+                        const relativeY = (b.y - e.y) / e.radius;
+                        // headshot if bullet hits upper ~45% of enemy circle (y offset less than -0.2*radius)
+                        const isHeadshot = ( (b.y - e.y) < - e.radius * 0.2 );
+                        
+                        let damageDealt = 1;
+                        if (isHeadshot) {
+                            damageDealt = 2;   // double damage + bonus
+                            headshotFlag = true;
+                        }
+                        e.hp -= damageDealt;
+                        if (e.hp <= 0) {
+                            if (isHeadshot) {
+                                score += 50;   // Headshot bonus
+                                updateUI();
+                            }
+                        }
+                        hitIndex = j;
+                        break;
+                    }
+                }
+                if (hitIndex !== -1) {
+                    bullets.splice(i,1);
+                    i--;
+                }
+            }
+        }
+
+        // Update player invincibility and health regen / boundary clamp
+        function updatePlayer() {
+            if (gameOver) return;
+            if (player.invincibleFrames > 0) {
+                player.invincibleFrames--;
+            }
+            // natural health regen (very slow, only if above zero and not game over)
+            if (player.health > 0 && player.health < player.maxHealth && frame % 90 === 0) {
+                player.health = Math.min(player.maxHealth, player.health + 5);
+                updateUI();
+            }
+            // keep player inside canvas
+            player.x = Math.min(Math.max(player.x, player.radius+5), width - player.radius-5);
+            player.y = Math.min(Math.max(player.y, player.radius+10), height - player.radius-5);
+            // Game over condition
+            if (player.health <= 0) {
+                gameOver = true;
+                player.health = 0;
+                updateUI();
+            }
+        }
+        
+        // ----- MOUSE CLICK SHOOTING -----
+        canvas.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            if (gameOver) return;
+            if (fireCooldown <= 0) {
+                shootFromPlayer();
+                fireCooldown = FIRE_DELAY_MAX;
+            }
+        });
+        
+        // touch for mobile / optional
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const touch = e.touches[0];
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            let canvasX = (touch.clientX - rect.left) * scaleX;
+            let canvasY = (touch.clientY - rect.top) * scaleY;
+            canvasX = Math.min(Math.max(canvasX, 0), width);
+            canvasY = Math.min(Math.max(canvasY, 0), height);
+            mouseX = canvasX;
+            mouseY = canvasY;
+            if (fireCooldown <= 0 && !gameOver) {
+                shootFromPlayer();
+                fireCooldown = FIRE_DELAY_MAX;
+            }
+        });
+        
+        // Keyboard restart for convenience
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.code === 'KeyR') {
+                e.preventDefault();
+                resetGame();
+            }
+        });
+        
+        // restart button
+        document.getElementById('resetGameBtn').addEventListener('click', () => {
+            resetGame();
+        });
+        
+        // Cooldown update
+        function updateCooldowns() {
+            if (fireCooldown > 0) fireCooldown--;
+        }
+        
+        // ----- GRAPHICS: DRAW EVERYTHING (PUBG STYLE)-----
+        function drawBackground() {
+            // gradient battlefield
+            const grad = ctx.createLinearGradient(0,0,0,height);
+            grad.addColorStop(0, '#1c3b2b');
+            grad.addColorStop(1, '#2b5e3b');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0,0,width,height);
+            // grid/military pattern
+            ctx.strokeStyle = '#6f8f4faa';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < width; i+= 60){
+                ctx.beginPath();
+                ctx.moveTo(i,0);
+                ctx.lineTo(i,height);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(0,i%height);
+                ctx.lineTo(width,i%height);
+                ctx.stroke();
+            }
+            // craters / details
+            ctx.fillStyle = '#35200caa';
+            for(let i=0;i<40;i++){
+                ctx.beginPath();
+                ctx.ellipse( (i*131)%width, (i*97)%height, 8, 5, 0, 0, Math.PI*2);
+                ctx.fill();
+            }
+        }
+        
+        function drawPlayer() {
+            // PUBG style vest + helmet
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = "black";
+            // armor circle
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.radius, 0, Math.PI*2);
+            ctx.fillStyle = '#4f6d3c';
+            ctx.fill();
+            ctx.strokeStyle = '#cf9f4a';
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+            // helmet
+            ctx.beginPath();
+            ctx.ellipse(player.x-3, player.y-8, 12, 10, 0, 0, Math.PI*2);
+            ctx.fillStyle = '#5c5c2e';
+            ctx.fill();
+            ctx.fillStyle = '#e6c394';
+            ctx.font = "bold 26monospace";
+            ctx.fillText("🏆", player.x-15, player.y-12);
+            // gun (pistol grip)
+            ctx.beginPath();
+            ctx.moveTo(player.x+15, player.y+4);
+            ctx.lineTo(player.x+32, player.y+2);
+            ctx.lineTo(player.x+28, player.y+12);
+            ctx.fillStyle = "#3a2a1f";
+            ctx.fill();
+            // direction line (aim assist)
+            ctx.beginPath();
+            ctx.moveTo(player.x, player.y);
+            ctx.lineTo(mouseX, mouseY);
+            ctx.strokeStyle = "#ffd966aa";
+            ctx.setLineDash([6,8]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // invincibility blink effect
+            if (player.invincibleFrames > 0 && (Math.floor(Date.now()/50)%3===0)) {
+                ctx.beginPath();
+                ctx.arc(player.x, player.y, player.radius+4, 0, Math.PI*2);
+                ctx.fillStyle = "#ffff99aa";
+                ctx.fill();
+            }
+            ctx.shadowBlur = 0;
+        }
+        
+        function drawEnemies() {
+            for(let e of enemies) {
+                ctx.shadowBlur = 4;
+                // body
+                ctx.beginPath();
+                ctx.arc(e.x, e.y, e.radius, 0, Math.PI*2);
+                ctx.fillStyle = e.color;
+                ctx.fill();
+                ctx.fillStyle = "#381f0e";
+                ctx.font = `${Math.floor(e.radius*0.9)}px monospace`;
+                ctx.fillText("👹", e.x-12, e.y-8);
+                // health bar if heavy or damaged
+                if(e.hp !== e.maxHp || e.maxHp>1){
+                    let hpPercent = e.hp/e.maxHp;
+                    ctx.fillStyle = "#aa2e2e";
+                    ctx.fillRect(e.x-e.radius, e.y-e.radius-8, e.radius*2, 6);
+                    ctx.fillStyle = "#44ff66";
+                    ctx.fillRect(e.x-e.radius, e.y-e.radius-8, e.radius*2*hpPercent, 5);
+                }
+                // additional bandana
+                ctx.fillStyle = "#773311";
+                ctx.beginPath();
+                ctx.ellipse(e.x+3, e.y-7, 7, 5, 0, 0, Math.PI*2);
+                ctx.fill();
+            }
+            ctx.shadowBlur = 0;
+        }
+        
+        function drawBullets() {
+            for(let b of bullets) {
+                ctx.beginPath();
+                ctx.arc(b.x, b.y, b.radius-2, 0, Math.PI*2);
+                ctx.fillStyle = "#f5bc70";
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(b.x, b.y, b.radius-3, 0, Math.PI*2);
+                ctx.fillStyle = "#ffdd99";
+                ctx.fill();
+            }
+        }
+        
+        function drawMuzzleFlash() {
+            if(muzzleFlash > 0) {
+                ctx.beginPath();
+                ctx.arc(player.x+8, player.y+2, 14, 0, Math.PI*2);
+                ctx.fillStyle = "#ffaa33cc";
+                ctx.fill();
+                muzzleFlash--;
+            }
+        }
+        
+        function drawGameOverlay() {
+            if(gameOver) {
+                ctx.fillStyle = "rgba(0,0,0,0.75)";
+                ctx.fillRect(0,0,width,height);
+                ctx.font = "bold 48monospace";
+                ctx.fillStyle = "#f3b33d";
+                ctx.shadowBlur = 0;
+                ctx.fillText("GAME OVER", width/2-150, height/2-50);
+                ctx.font = "26monospace";
+                ctx.fillStyle = "white";
+                ctx.fillText("PRESS [R] or RESTART", width/2-170, height/2+40);
+                ctx.font = "20monospace";
+                ctx.fillStyle = "#ffe1a0";
+                ctx.fillText(`KILLS: ${kills}  |  SCORE: ${score}`, width/2-120, height/2+110);
+            }
+        }
+        
+        function drawCrosshair() {
+            if(!gameOver) {
+                ctx.beginPath();
+                ctx.arc(mouseX, mouseY, 9, 0, Math.PI*2);
+                ctx.strokeStyle = "white";
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(mouseX-18, mouseY);
+                ctx.lineTo(mouseX-8, mouseY);
+                ctx.moveTo(mouseX+18, mouseY);
+                ctx.lineTo(mouseX+8, mouseY);
+                ctx.moveTo(mouseX, mouseY-18);
+                ctx.lineTo(mouseX, mouseY-8);
+                ctx.moveTo(mouseX, mouseY+18);
+                ctx.lineTo(mouseX, mouseY+8);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(mouseX, mouseY, 4, 0, Math.PI*2);
+                ctx.fillStyle = "#ff5050aa";
+                ctx.fill();
+            }
+        }
+        
+        // Update UI stats extra (health UI sync)
+        function syncUIEveryFrame(){
+            document.getElementById('healthVal').innerText = Math.max(0, player.health);
+            document.getElementById('killCount').innerText = kills;
+            document.getElementById('scoreVal').innerText = score;
+        }
+        
+        // ------ GAME LOOP ------
+        function gameUpdate() {
+            if (!gameOver) {
+                updateCooldowns();
+                updateEnemies();
+                updateBullets();
+                updatePlayer();
+                handleSpawning();
+                // dynamic mouse-look (no extra)
+                syncUIEveryFrame();
+            }
+            frame++;
+        }
+        
+        function drawEverything() {
+            drawBackground();
+            drawEnemies();
+            drawBullets();
+            drawPlayer();
+            drawMuzzleFlash();
+            drawCrosshair();
+            drawGameOverlay();
+            // extra stats on canvas (ammo/cool)
+            ctx.font = "bold 14monospace";
+            ctx.fillStyle = "#ddf4aa";
+            ctx.fillText(`⚡ FIRING READY`, width-120, 30);
+        }
+        
+        function animate() {
+            gameUpdate();
+            drawEverything();
+            requestAnimationFrame(animate);
+        }
+        
+        // initialize & start
+        resetGame();
+        // set mouse at start near player
+        mouseX = player.x;
+        mouseY = player.y;
+        animate();
+        
+        // resize canvas when window resize? keep stable resolution
+        window.addEventListener('resize', () => {});
+    })();
+</script>
+</body>
+</html>
